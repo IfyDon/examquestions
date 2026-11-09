@@ -1,0 +1,16 @@
+{
+  "exam": "DEMO",
+  "subject": "Sample Physics",
+  "year": 2025,
+  "question": "A synthetic demo question: which unit is used to measure electric current?",
+  "options": {
+    "A": "Volt",
+    "B": "Ampere",
+    "C": "Ohm",
+    "D": "Watt"
+  },
+  "answer": "B",
+  "explanation": "Electric current is measured in amperes.",
+  "source_url": null,
+  "media": []
+}
