@@ -3,7 +3,8 @@
 In Docker, copy the source file to the API container and run:
 
     docker compose exec -T api python -m app.import_questions \
-        --file /tmp/questions.json --batch-size 500
+        --file /tmp/Export_Group1.json /tmp/Export_Group3.json \
+        /tmp/Export_Group4.json /tmp/Export_Group5.json --batch-size 500
 """
 
 import argparse
@@ -23,9 +24,12 @@ from app.models import Exam, Option, Question, Subject
 from app.schemas import QuestionInput
 from app.services import question_hash
 
-DEFAULT_FILE = Path(
-    r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_All_Subjects.json"
-)
+DEFAULT_FILES = [
+    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group1.json"),
+    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group3.json"),
+    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group4.json"),
+    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group5.json"),
+]
 EXAM_NAMES = {
     "bece",
     "demo",
@@ -157,9 +161,13 @@ def _context_fields(path: tuple[str, ...]) -> dict[str, Any]:
     return fields
 
 
-def normalize_record(record: dict[str, Any], path: tuple[str, ...]) -> QuestionInput:
+def normalize_record(
+    record: dict[str, Any],
+    path: tuple[str, ...],
+    default_exam: str = "JAMB",
+) -> QuestionInput:
     context = _context_fields(path)
-    exam = _record_field(record, EXAM_KEYS) or context.get("exam_type")
+    exam = _record_field(record, EXAM_KEYS) or context.get("exam_type") or default_exam
     subject = _record_field(record, SUBJECT_KEYS) or context.get("subject")
     year = _record_field(record, YEAR_KEYS)
     if year is None:
@@ -198,10 +206,15 @@ def _chunks(items: Iterator[QuestionInput], size: int) -> Iterator[list[Question
         yield chunk
 
 
-def import_questions(file_path: Path, batch_size: int) -> tuple[int, int, int]:
+def import_questions(
+    file_paths: Sequence[Path],
+    batch_size: int,
+    default_exam: str = "JAMB",
+) -> tuple[int, int, int]:
     imported = skipped = processed = 0
     records = (
-        normalize_record(record, path)
+        normalize_record(record, path, default_exam)
+        for file_path in file_paths
         for record, path in iter_question_records(file_path)
     )
 
@@ -341,19 +354,30 @@ def print_summary() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Stream a question JSON file into the configured PostgreSQL database."
+        description="Stream question JSON files into the configured PostgreSQL database."
     )
-    parser.add_argument("--file", type=Path, default=DEFAULT_FILE)
+    parser.add_argument("--file", type=Path, nargs="+", default=DEFAULT_FILES)
     parser.add_argument("--batch-size", type=int, default=500)
+    parser.add_argument(
+        "--default-exam",
+        default="JAMB",
+        help="Exam name for records without an exam field or enclosing exam key.",
+    )
     args = parser.parse_args()
 
     if args.batch_size < 1:
         parser.error("--batch-size must be at least 1")
-    if not args.file.is_file():
-        parser.error(f"Input file does not exist: {args.file}")
+    missing_files = [path for path in args.file if not path.is_file()]
+    if missing_files:
+        parser.error(
+            "Input file(s) do not exist: "
+            + ", ".join(str(path) for path in missing_files)
+        )
 
     try:
-        processed, imported, skipped = import_questions(args.file, args.batch_size)
+        processed, imported, skipped = import_questions(
+            args.file, args.batch_size, args.default_exam
+        )
     except Exception as error:
         print(f"Import failed: {error}", file=sys.stderr)
         return 1

@@ -29,6 +29,19 @@ class ImportQuestionTests(unittest.TestCase):
         self.assertEqual(payload.year, 2019)
         self.assertEqual(payload.options["A"], "A push or pull")
 
+    def test_uses_default_exam_when_record_has_no_exam(self):
+        record = {
+            "subject": "English Language",
+            "year": None,
+            "question_text": "Pick the correct answer.",
+            "options": {"A": "Option"},
+        }
+
+        payload = normalize_record(record, (), default_exam="JAMB")
+
+        self.assertEqual(payload.exam, "JAMB")
+        self.assertIsNone(payload.year)
+
     def test_inherits_exam_subject_and_year_from_nested_structure(self):
         data = {
             "JAMB": {
@@ -80,6 +93,32 @@ class ImportQuestionTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         payload = normalize_record(*records[0])
         self.assertEqual((payload.exam, payload.subject, payload.year), ("WAEC", "Physics", 2020))
+
+    def test_streams_records_from_multiple_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / "first.json", Path(directory) / "second.json"]
+            for path, subject in zip(paths, ("Physics", "Chemistry")):
+                path.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "subject": subject,
+                                "question_text": f"Question in {subject}",
+                                "options": {},
+                            }
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+
+            records = [
+                normalize_record(record, path, default_exam="JAMB")
+                for file_path in paths
+                for record, path in iter_question_records(file_path)
+            ]
+
+        self.assertEqual([record.subject for record in records], ["Physics", "Chemistry"])
+        self.assertEqual([record.exam for record in records], ["JAMB", "JAMB"])
 
 
 if __name__ == "__main__":
