@@ -3,8 +3,8 @@
 In Docker, copy the source file to the API container and run:
 
     docker compose exec -T api python -m app.import_questions \
-        --file /tmp/Export_Group1.json /tmp/Export_Group3.json \
-        /tmp/Export_Group4.json /tmp/Export_Group5.json --batch-size 500
+        --file /tmp/Export1_Group1.json /tmp/Export1_Group4.json \
+        /tmp/Export1_Group5.json /tmp/Export1_Group6.json --batch-size 500
 """
 
 import argparse
@@ -25,10 +25,10 @@ from app.schemas import QuestionInput
 from app.services import question_hash
 
 DEFAULT_FILES = [
-    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group1.json"),
-    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group3.json"),
-    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group4.json"),
-    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group5.json"),
+    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export1_Group1.json"),
+    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export1_Group4.json"),
+    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export1_Group5.json"),
+    Path(r"C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export1_Group6.json"),
 ]
 EXAM_NAMES = {
     "bece",
@@ -62,6 +62,7 @@ EXAM_KEYS = ("exam_type", "exam", "exam_name")
 SUBJECT_KEYS = ("subject", "subject_name")
 YEAR_KEYS = ("year", "exam_year")
 OPTION_KEYS = ("options", "choices")
+ANSWER_KEYS = ("answer", "correct_answer")
 
 
 def _record_field(record: dict[str, Any], names: Sequence[str]) -> Any:
@@ -189,7 +190,7 @@ def normalize_record(
         year=year,
         question=question,
         options=options,
-        answer=record.get("answer"),
+        answer=_record_field(record, ANSWER_KEYS),
         explanation=record.get("explanation"),
         source_url=record.get("source_url"),
     )

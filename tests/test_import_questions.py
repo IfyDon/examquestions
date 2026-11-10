@@ -42,6 +42,18 @@ class ImportQuestionTests(unittest.TestCase):
         self.assertEqual(payload.exam, "JAMB")
         self.assertIsNone(payload.year)
 
+    def test_reads_correct_answer_alias(self):
+        record = {
+            "exam_type": "WAEC",
+            "subject": "Further Mathematics",
+            "question_text": "Find y.",
+            "correct_answer": "c",
+        }
+
+        payload = normalize_record(record, ())
+
+        self.assertEqual(payload.answer, "c")
+
     def test_inherits_exam_subject_and_year_from_nested_structure(self):
         data = {
             "JAMB": {
