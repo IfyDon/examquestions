@@ -41,6 +41,24 @@ class Subject(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class QuestionRegistry(Base):
+    __tablename__ = "question_registry"
+    __table_args__ = (
+        Index(
+            "question_registry_hash_idx",
+            "question_hash",
+            unique=True,
+            postgresql_where="question_hash IS NOT NULL",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    exam_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("exams.id", ondelete="CASCADE"), nullable=False
+    )
+    question_hash: Mapped[str | None] = mapped_column(Text)
+
+
 class Question(Base):
     __tablename__ = "questions"
     __table_args__ = (
@@ -93,7 +111,9 @@ class Option(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     question_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("questions.id", ondelete="CASCADE"), nullable=False
+        BigInteger,
+        ForeignKey("question_registry.id", ondelete="CASCADE"),
+        nullable=False,
     )
     option_key: Mapped[str] = mapped_column(Text, nullable=False)
     option_text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -105,7 +125,9 @@ class QuestionMedia(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     question_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("questions.id", ondelete="CASCADE"), nullable=False
+        BigInteger,
+        ForeignKey("question_registry.id", ondelete="CASCADE"),
+        nullable=False,
     )
     source_url: Mapped[str | None] = mapped_column(Text)
     media_type: Mapped[str] = mapped_column(Text, nullable=False)
@@ -184,7 +206,7 @@ class QuestionRevision(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     question_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("questions.id", ondelete="SET NULL")
+        BigInteger, ForeignKey("question_registry.id", ondelete="SET NULL")
     )
     previous_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
     changed_at: Mapped[datetime] = mapped_column(

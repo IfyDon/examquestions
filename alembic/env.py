@@ -9,10 +9,23 @@ config.set_main_option("sqlalchemy.url", DATABASE_URL.replace("%", "%%"))
 target_metadata = Base.metadata
 
 
+def include_object(object_, name, type_, reflected, compare_to):
+    if type_ == "table" and name in {
+        "questions",
+        "jamb_questions",
+        "waec_questions",
+        "neco_questions",
+        "demo_questions",
+    }:
+        return False
+    return True
+
+
 def run_migrations_offline():
     context.configure(
         url=DATABASE_URL,
         target_metadata=target_metadata,
+        include_object=include_object,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
@@ -31,6 +44,7 @@ def run_migrations_online():
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
+            include_object=include_object,
             compare_type=True,
         )
         with context.begin_transaction():

@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models import Exam, Option, Question, QuestionMedia, Subject
+from app.question_storage import question_registry, question_table_for_exam
 from app.schemas import QuestionInput
 
 MEDIA_ROOT = Path(__import__("os").environ.get("MEDIA_ROOT", "/data/media")).resolve()
@@ -66,43 +67,46 @@ def save_question(db: Session, payload: QuestionInput) -> tuple[Question, bool]:
         db.flush()
 
     digest = question_hash(payload)
-    existing_id = db.scalar(
-        select(Question.id)
-        .where(Question.question_hash == digest)
-        .with_for_update()
-    )
-    if existing_id is not None:
+    question_id = db.execute(
+        pg_insert(question_registry)
+        .values(
+            exam_id=exam.id,
+            question_hash=digest,
+        )
+        .on_conflict_do_nothing(
+            index_elements=[question_registry.c.question_hash],
+            index_where=question_registry.c.question_hash.is_not(None),
+        )
+        .returning(question_registry.c.id)
+    ).scalar_one_or_none()
+    if question_id is None:
+        existing_id = db.scalar(
+            select(question_registry.c.id).where(
+                question_registry.c.question_hash == digest
+            )
+        )
+        if existing_id is None:
+            raise RuntimeError(
+                "Question hash conflict occurred but no saved question was found."
+            )
         return db.get(Question, existing_id), False
 
-    insert_result = db.execute(
-        pg_insert(Question)
-        .values(
+    question_table = question_table_for_exam(exam_name)
+    db.execute(
+        pg_insert(question_table).values(
+            id=question_id,
             exam_id=exam.id,
             subject_id=subject.id,
             year=payload.year,
             question=payload.question.strip(),
-            question_hash=digest,
             options=payload.options,
             answer=payload.answer,
             explanation=payload.explanation,
             source_url=str(payload.source_url) if payload.source_url else None,
             review_status="pending",
+            schema_version=1,
         )
-        .on_conflict_do_nothing(
-            index_elements=[Question.question_hash],
-            index_where=Question.question_hash.is_not(None),
-        )
-        .returning(Question.id)
     )
-    question_id = insert_result.scalar_one_or_none()
-    if question_id is None:
-        existing = db.scalar(
-            select(Question).where(Question.question_hash == digest)
-        )
-        if existing is None:
-            raise RuntimeError("Question hash conflict occurred but no saved question was found.")
-        return existing, False
-
     question = db.get(Question, question_id)
     for key, text in payload.options.items():
         db.add(Option(question_id=question.id, option_key=key, option_text=text))

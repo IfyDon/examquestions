@@ -40,7 +40,7 @@ def upgrade():
         "crawl_runs",
         "duplicate_question_count >= 0",
     )
-    op.drop_index("questions_hash_idx", table_name="questions")
+    op.execute("DROP INDEX IF EXISTS questions_hash_idx")
     op.create_index(
         "questions_hash_idx",
         "questions",

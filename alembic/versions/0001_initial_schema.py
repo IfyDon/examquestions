@@ -23,6 +23,14 @@ def upgrade():
     )
     op.execute(
         """
+        ALTER TABLE crawl_runs
+        DROP COLUMN IF EXISTS new_question_count,
+        DROP COLUMN IF EXISTS duplicate_question_count
+        """
+    )
+    op.execute("DROP INDEX IF EXISTS questions_hash_idx")
+    op.execute(
+        """
         CREATE OR REPLACE FUNCTION save_question_revision() RETURNS TRIGGER AS $$
         BEGIN
             INSERT INTO question_revisions (question_id, previous_data)

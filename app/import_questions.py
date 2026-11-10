@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.database import SessionLocal
 from app.models import Exam, Option, Question, Subject
+from app.question_storage import question_registry, question_table_for_exam
 from app.schemas import QuestionInput
 from app.services import question_hash
 
@@ -277,11 +278,37 @@ def import_questions(
                 }
 
                 rows_by_hash = {}
-                question_rows = []
+                registry_rows = []
                 for payload, digest in prepared:
                     exam_id = exams[payload.exam.strip()]
-                    question_rows.append(
+                    question_table_for_exam(payload.exam)
+                    registry_rows.append(
+                        {"exam_id": exam_id, "question_hash": digest}
+                    )
+                    rows_by_hash[digest] = payload
+
+                inserted_questions = db.execute(
+                    pg_insert(question_registry)
+                    .values(registry_rows)
+                    .on_conflict_do_nothing(
+                        index_elements=[question_registry.c.question_hash],
+                        index_where=question_registry.c.question_hash.is_not(None),
+                    )
+                    .returning(
+                        question_registry.c.id,
+                        question_registry.c.question_hash,
+                    )
+                ).all()
+                imported += len(inserted_questions)
+                skipped += len(prepared) - len(inserted_questions)
+
+                question_rows_by_exam = {}
+                for question_id, digest in inserted_questions:
+                    payload = rows_by_hash[digest]
+                    exam_id = exams[payload.exam.strip()]
+                    question_rows_by_exam.setdefault(payload.exam, []).append(
                         {
+                            "id": question_id,
                             "exam_id": exam_id,
                             "subject_id": subjects[
                                 (exam_id, payload.subject.strip())
@@ -294,23 +321,16 @@ def import_questions(
                             "source_url": (
                                 str(payload.source_url) if payload.source_url else None
                             ),
-                            "question_hash": digest,
                             "review_status": "pending",
+                            "schema_version": 1,
                         }
                     )
-                    rows_by_hash[digest] = payload
-
-                inserted_questions = db.execute(
-                    pg_insert(Question)
-                    .values(question_rows)
-                    .on_conflict_do_nothing(
-                        index_elements=[Question.question_hash],
-                        index_where=Question.question_hash.is_not(None),
+                for exam_name, question_rows in question_rows_by_exam.items():
+                    db.execute(
+                        pg_insert(question_table_for_exam(exam_name)).values(
+                            question_rows
+                        )
                     )
-                    .returning(Question.id, Question.question_hash)
-                ).all()
-                imported += len(inserted_questions)
-                skipped += len(prepared) - len(inserted_questions)
 
                 option_rows = [
                     {

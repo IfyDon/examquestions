@@ -1,0 +1,333 @@
+"""Split question storage into one physical table per exam."""
+
+from alembic import op
+
+revision = "0003_exam_question_tables"
+down_revision = "0002_dedup_counts"
+branch_labels = None
+depends_on = None
+
+EXAMS = ("jamb", "waec", "neco", "demo")
+
+
+def _create_exam_table(name: str) -> None:
+    op.execute(
+        f"""
+        CREATE TABLE {name}_questions (
+            id BIGINT PRIMARY KEY
+                REFERENCES question_registry(id) ON DELETE CASCADE,
+            exam_id BIGINT NOT NULL
+                REFERENCES exams(id) ON DELETE CASCADE,
+            subject_id BIGINT NOT NULL,
+            year INTEGER,
+            question TEXT NOT NULL,
+            options JSONB NOT NULL DEFAULT '[]'::jsonb,
+            answer TEXT,
+            explanation TEXT,
+            source_url TEXT,
+            review_status TEXT NOT NULL DEFAULT 'pending',
+            schema_version INTEGER NOT NULL DEFAULT 1,
+            scraped_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT {name}_questions_subject_exam_fk
+                FOREIGN KEY (subject_id, exam_id)
+                REFERENCES subjects(id, exam_id) ON DELETE CASCADE,
+            CONSTRAINT {name}_questions_schema_version_check
+                CHECK (schema_version > 0)
+        )
+        """
+    )
+    op.execute(
+        f"CREATE INDEX {name}_questions_subject_year_idx "
+        f"ON {name}_questions (exam_id, subject_id, year)"
+    )
+
+
+def _drop_question_fks(target_table: str) -> None:
+    op.execute(
+        f"""
+        DO $$
+        DECLARE item RECORD;
+        BEGIN
+            FOR item IN
+                SELECT conrelid::regclass AS table_name, conname
+                FROM pg_constraint
+                WHERE contype = 'f'
+                  AND confrelid = '{target_table}'::regclass
+            LOOP
+                EXECUTE format(
+                    'ALTER TABLE %s DROP CONSTRAINT %I',
+                    item.table_name,
+                    item.conname
+                );
+            END LOOP;
+        END
+        $$
+        """
+    )
+
+
+def _drop_dependent_fks() -> None:
+    op.execute(
+        """
+        DO $$
+        DECLARE item RECORD;
+        BEGIN
+            FOR item IN
+                SELECT conrelid::regclass AS table_name, conname
+                FROM pg_constraint
+                WHERE contype = 'f'
+                  AND conrelid IN (
+                      'options'::regclass,
+                      'question_media'::regclass,
+                      'question_revisions'::regclass
+                  )
+            LOOP
+                EXECUTE format(
+                    'ALTER TABLE %s DROP CONSTRAINT %I',
+                    item.table_name,
+                    item.conname
+                );
+            END LOOP;
+        END
+        $$
+        """
+    )
+
+
+def _create_question_view() -> None:
+    selections = []
+    for exam in EXAMS:
+        selections.append(
+            f"""
+            SELECT q.id, q.exam_id, q.subject_id, q.year, q.question, q.options,
+                   q.answer, q.explanation, q.source_url, r.question_hash,
+                   q.review_status, q.schema_version, q.scraped_at
+            FROM {exam}_questions q
+            JOIN question_registry r ON r.id = q.id
+            """
+        )
+    op.execute("CREATE VIEW questions AS " + " UNION ALL ".join(selections))
+
+
+def _create_revision_triggers() -> None:
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION save_question_revision() RETURNS TRIGGER AS $$
+        BEGIN
+            INSERT INTO question_revisions (question_id, previous_data)
+            VALUES (OLD.id, to_jsonb(OLD));
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        """
+    )
+    for exam in EXAMS:
+        op.execute(
+            f"""
+            CREATE TRIGGER {exam}_questions_save_revision
+            BEFORE UPDATE ON {exam}_questions
+            FOR EACH ROW EXECUTE FUNCTION save_question_revision()
+            """
+        )
+
+
+def upgrade():
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM questions q
+                JOIN exams e ON e.id = q.exam_id
+                WHERE lower(e.name) NOT IN ('jamb', 'waec', 'neco', 'demo')
+            ) THEN
+                RAISE EXCEPTION
+                    'Cannot split questions: an unsupported exam name exists.';
+            END IF;
+        END
+        $$
+        """
+    )
+
+    op.execute("DROP TRIGGER IF EXISTS questions_save_revision ON questions")
+    op.execute("DROP FUNCTION IF EXISTS save_question_revision()")
+    op.execute("ALTER TABLE questions RENAME TO questions_legacy")
+    _drop_question_fks("questions_legacy")
+    _drop_dependent_fks()
+    op.execute("DROP TABLE IF EXISTS question_registry")
+
+    op.execute(
+        """
+        CREATE TABLE question_registry (
+            id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+            exam_id BIGINT NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            question_hash TEXT
+        )
+        """
+    )
+    op.execute(
+        """
+        CREATE UNIQUE INDEX question_registry_hash_idx
+        ON question_registry (question_hash)
+        WHERE question_hash IS NOT NULL
+        """
+    )
+    for exam in EXAMS:
+        _create_exam_table(exam)
+
+    op.execute(
+        """
+        INSERT INTO question_registry (id, exam_id, question_hash)
+        SELECT id, exam_id, question_hash FROM questions_legacy
+        """
+    )
+    for exam in EXAMS:
+        op.execute(
+            f"""
+            INSERT INTO {exam}_questions (
+                id, exam_id, subject_id, year, question, options, answer,
+                explanation, source_url, review_status, schema_version, scraped_at
+            )
+            SELECT q.id, q.exam_id, q.subject_id, q.year, q.question, q.options,
+                   q.answer, q.explanation, q.source_url, q.review_status,
+                   q.schema_version, q.scraped_at
+            FROM questions_legacy q
+            JOIN exams e ON e.id = q.exam_id
+            WHERE lower(e.name) = '{exam}'
+            """
+        )
+
+    op.execute(
+        """
+        SELECT setval(
+            pg_get_serial_sequence('question_registry', 'id'),
+            COALESCE((SELECT MAX(id) FROM question_registry), 1),
+            EXISTS (SELECT 1 FROM question_registry)
+        )
+        """
+    )
+
+    for table, action in (
+        ("options", "CASCADE"),
+        ("question_media", "CASCADE"),
+        ("question_revisions", "SET NULL"),
+    ):
+        op.execute(
+            f"ALTER TABLE {table} ADD CONSTRAINT {table}_question_registry_fk "
+            f"FOREIGN KEY (question_id) REFERENCES question_registry(id) "
+            f"ON DELETE {action}"
+        )
+
+    op.execute("DROP TABLE questions_legacy")
+    _create_question_view()
+    _create_revision_triggers()
+
+
+def downgrade():
+    for exam in EXAMS:
+        op.execute(f"DROP TRIGGER IF EXISTS {exam}_questions_save_revision ON {exam}_questions")
+    op.execute("DROP FUNCTION IF EXISTS save_question_revision()")
+    op.execute("DROP VIEW questions")
+
+    for table in ("options", "question_media", "question_revisions"):
+        op.execute(f"ALTER TABLE {table} DROP CONSTRAINT {table}_question_registry_fk")
+
+    op.execute(
+        """
+        CREATE TABLE questions (
+            id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+            exam_id BIGINT NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            subject_id BIGINT NOT NULL,
+            year INTEGER,
+            question TEXT NOT NULL,
+            options JSONB NOT NULL DEFAULT '[]'::jsonb,
+            answer TEXT,
+            explanation TEXT,
+            source_url TEXT,
+            question_hash TEXT,
+            review_status TEXT NOT NULL DEFAULT 'pending',
+            schema_version INTEGER NOT NULL DEFAULT 1,
+            scraped_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT questions_subject_id_exam_id_fkey
+                FOREIGN KEY (subject_id, exam_id)
+                REFERENCES subjects(id, exam_id) ON DELETE CASCADE,
+            CONSTRAINT questions_schema_version_check CHECK (schema_version > 0)
+        )
+        """
+    )
+    op.execute(
+        """
+        CREATE INDEX questions_exam_subject_year_idx
+        ON questions (exam_id, subject_id, year)
+        """
+    )
+    op.execute(
+        """
+        CREATE UNIQUE INDEX questions_hash_idx
+        ON questions (question_hash)
+        WHERE question_hash IS NOT NULL
+        """
+    )
+    op.execute(
+        """
+        INSERT INTO questions (
+            id, exam_id, subject_id, year, question, options, answer, explanation,
+            source_url, question_hash, review_status, schema_version, scraped_at
+        )
+        SELECT q.id, q.exam_id, q.subject_id, q.year, q.question, q.options,
+               q.answer, q.explanation, q.source_url, r.question_hash,
+               q.review_status, q.schema_version, q.scraped_at
+        FROM (
+            SELECT * FROM jamb_questions
+            UNION ALL SELECT * FROM waec_questions
+            UNION ALL SELECT * FROM neco_questions
+            UNION ALL SELECT * FROM demo_questions
+        ) q
+        JOIN question_registry r ON r.id = q.id
+        """
+    )
+    op.execute(
+        """
+        SELECT setval(
+            pg_get_serial_sequence('questions', 'id'),
+            COALESCE((SELECT MAX(id) FROM questions), 1),
+            EXISTS (SELECT 1 FROM questions)
+        )
+        """
+    )
+    for table, action in (
+        ("options", "CASCADE"),
+        ("question_media", "CASCADE"),
+        ("question_revisions", "SET NULL"),
+    ):
+        op.execute(
+            f"ALTER TABLE {table} ADD CONSTRAINT {table}_question_id_fkey "
+            f"FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE {action}"
+        )
+
+    for exam in EXAMS:
+        op.execute(f"DROP TABLE {exam}_questions")
+    op.execute("DROP TABLE question_registry")
+    _create_old_revision_trigger()
+
+
+def _create_old_revision_trigger():
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION save_question_revision() RETURNS TRIGGER AS $$
+        BEGIN
+            INSERT INTO question_revisions (question_id, previous_data)
+            VALUES (OLD.id, to_jsonb(OLD));
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER questions_save_revision
+        BEFORE UPDATE ON questions
+        FOR EACH ROW EXECUTE FUNCTION save_question_revision()
+        """
+    )
