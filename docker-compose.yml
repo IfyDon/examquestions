@@ -57,6 +57,19 @@ services:
       api:
         condition: service_healthy
 
+  exam_app:
+    build: ./exam_app
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://app_reader:${APP_READER_PASSWORD:?Set APP_READER_PASSWORD in .env}@db:5432/${POSTGRES_DB:-examquestion}
+      APP_USER: ${APP_USER:?Set APP_USER in .env}
+      APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${EXAM_APP_PORT:-8001}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
   scheduler:
     build: .
     command: ["python", "-m", "app.scheduler"]
