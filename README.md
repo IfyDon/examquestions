@@ -1,8 +1,6 @@
 # wikiWebSafe Question Bank
 
-The project keeps the existing Wikipedia text scraper and adds a local,
-Docker-based question-bank API, PostgreSQL database, source adapters, worker,
-and JSON export.
+
 
 ## Start the services
 
@@ -40,6 +38,34 @@ The worker processes the local fixture. Check the run and exported JSON:
 Invoke-RestMethod "http://127.0.0.1:8000/crawl-runs/$($run.id)"
 Invoke-RestMethod http://127.0.0.1:8000/questions/export.json
 ```
+
+## Bulk-import a JSON question file
+
+The importer streams flat or nested subject/year JSON, validates records, and
+inserts questions and options in batches. It skips records whose normalized
+exam, subject, year, and question text already exist.
+
+Copy the JSON exports into the running API container and run the importer.
+Multiple files are streamed in configurable batches; exports without an exam
+field default to JAMB (override with `--default-exam`):
+
+```powershell
+docker cp "C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group1.json" wikiwebsafe-api-1:/tmp/Export_Group1.json
+docker cp "C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group3.json" wikiwebsafe-api-1:/tmp/Export_Group3.json
+docker cp "C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group4.json" wikiwebsafe-api-1:/tmp/Export_Group4.json
+docker cp "C:\Users\USA\Desktop\Project\wikiWebSafe\Crawl\Export_Group5.json" wikiwebsafe-api-1:/tmp/Export_Group5.json
+docker compose exec -T api python -m app.import_questions --file /tmp/Export_Group1.json /tmp/Export_Group3.json /tmp/Export_Group4.json /tmp/Export_Group5.json --batch-size 500
+```
+
+The command prints the number imported and skipped, then reports database
+totals for each exam/subject and a grand total. Duplicate identity includes
+exam, subject, year, and normalized question text. Input files are not added
+to the Docker image or committed to Git.
+
+Questions are stored in separate `jamb_questions`, `waec_questions`,
+`neco_questions`, and `demo_questions` tables. The `questions` view combines
+them for existing API reads, while `question_registry` preserves globally
+unique IDs and duplicate hashes.
 
 Question updates are deduplicated by a normalized content hash and recorded in
 `question_revisions`. Questions remain in `pending` review status until reviewed.
@@ -104,3 +130,14 @@ python .\scrape_wikipedia.py
 
 `docker compose down` stops containers but preserves database and media volumes.
 Do not remove volumes unless you intend to delete their data.
+
+## Exam app
+
+The read-only practice app is available at `http://127.0.0.1:8001` after its
+database access migration has been applied and the `exam_app` service is
+started. Set `APP_READER_PASSWORD`, `APP_USER`, `APP_PASSWORD`, and
+`EXAM_APP_PORT` in `.env`. The reader password is used only by the one-off
+migration; the app receives only its database URL and login credentials.
+Questions stay hidden until an owner approves their IDs with
+[`exam_app/sql/02_approve_questions.sql`](./exam_app/sql/02_approve_questions.sql).
+See [Configtest.md](./Configtest.md) for setup and manual checks.

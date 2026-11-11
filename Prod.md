@@ -170,5 +170,15 @@ Database Design
 ### PostgreSQL deployment requirements (Note: Make the database to later accept data for web scraping)
 
 -- Design on docker. Leave it open to accept data for web scraping
+ 
+## Exam app
+
+The read-only practice UI runs as a separate Compose service at
+`http://127.0.0.1:8001` (localhost only). Apply the `0005_exam_app_access`
+Alembic migration with `APP_READER_PASSWORD` supplied only to that migration.
+The app uses the restricted `app_reader` role and required HTTP Basic login;
+only owner-approved questions are visible. Approve reviewed question IDs with
+[`exam_app/sql/02_approve_questions.sql`](./exam_app/sql/02_approve_questions.sql).
+See [Configtest.md](./Configtest.md) for manual setup and checks.
 
 ---
